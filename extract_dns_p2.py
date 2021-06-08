@@ -8,8 +8,9 @@ from subprocess import Popen, PIPE
 from scapy.layers.dns import DNS, DNSQR, DNSRR
 from scapy.layers.inet import IP
 
-input, output = "resources/traffic.pcap", "resources/extracted.pcap"
-# topdomain = ".pirate.sea."
+import zlib
+
+input, output, errout = "resources/challenge_null.pcap", "resources/challenge_extracted.pcap", "resources/errors.bin"
 topdomain = ".t.xkjcjk.xyz."
 upstream_encoding = 128
 
@@ -63,70 +64,47 @@ def dn_header(p):
 # Extract packets from DNS tunnel
 # Note: handles fragmentation, but not packet reordering (sequence numbers)
 p = rdpcap(input)
+err_file = open(errout, "w")
 dn_pkt, up_pkt = '', ''
-dec_pkt = ''
 datasent = False
 E = []
-err_cnt = 0
 for i in range(len(p)):
     if not p[i].haslayer(DNS):
         continue
     if DNSQR in p[i]:
         if DNSRR in p[i] and len(p[i][DNSRR].rdata) > 0:  # downstream/server
-            d = p[i][DNSRR].rdata # [0]
-            # if datasent:  # real data and no longer codec/fragment checks
-                # for bottle.pcap
-                # if dn_header(d)['lastfrag'] and len(dn_pkt) > 0:
-                #     u = uncompress(dn_pkt)
-                #     if not u:
-                #         raise Exception("Error dn_pkt %i: %r" % (i, dn_pkt))
-                #     E += [IP(u[4:])]
-                #     dn_pkt = ''
-                # for traffic.pcap
-                # if dn_header(d)['lastfrag'] and len(dn_pkt) > 0:
-                #     if dn_header(d)['compress']:
-                #         u = uncompress(encoder(32, decode=dn_pkt))
-                #         if not u:
-                #             raise Exception("Error dn_pkt %i: %r" % (i, dn_pkt))
-                #     else:
-                #         u = encoder(32, decode=dn_pkt)
-                #         if not u:
-                #             raise Exception("Error dn_pkt %i: %r" % (i, dn_pkt))
-                #     E += [IP(u[4:])]
-                #     dn_pkt = ''
+            d = p[i][DNSRR].rdata
+            if datasent:  # real data and no longer codec/fragment checks
+                err_file.write("[S] >> " + d + "\n")
+                dn_pkt += d[2:]
+                if dn_header(d)['lastfrag'] and len(dn_pkt) > 0:
+                    # u = uncompress(dn_pkt)
+                    u = zlib.decompress(dn_pkt)
+                    if not u:
+                        raise Exception("Error dn_pkt %i: %r" % (i, dn_pkt))
+                    E += [IP(u[4:])]
+                    dn_pkt = ''
         else:  # upstream/client
             d = p[i][DNSQR].qname
             if d[0].lower() in "0123456789abcdef":
                 datasent = True
-                fragment = d[5:-len(topdomain)].replace(".", "")
-                dec_pkt += encoder(upstream_encoding, decode=fragment)
-                up_pkt += fragment
-                print "Fragment size %i" % len(fragment)
-                if not up_header(d)['lastfrag']:
-                    print "Fragment %s" % up_header(d)
-                    # fd = open("resources/temp.bin", "ab")
-                    # fd.write(d[5:-len(topdomain)].replace(".", ""))
-                    # fd.close()
+                err_file.write("[C] >> "+d+"\n")
+                up_pkt += d[5:-len(topdomain)].replace(".", "")
+                print "Fragment %s" % up_header(d)
                 if up_header(d)['lastfrag'] and len(up_pkt) > 0:
-                    print "Total size %i" % len(up_pkt)
-                    dec = encoder(upstream_encoding, decode=up_pkt)
-                    fd = open("resources/temp.zip", "wb")
-                    fd.write(dec)
-                    fd.close()
-                    u = uncompress(dec)
+                    # u = uncompress(encoder(upstream_encoding, decode=up_pkt))
+                    decoded = encoder(upstream_encoding, decode=up_pkt)
+                    u = uncompress(decoded)
                     if not u:
-                        print "Failed"
-                        # fd = open("resources/temp.bin", "ab")
-                        # fd.write(d[5:-len(topdomain)].replace(".", ""))
-                        # fd.close()
-                        up_pkt = ''
-                        err_cnt = err_cnt+1
-                        continue
-                    print "Succes"
-                    E += [IP(u[4:])]
+                        # raise Exception("Error up_pkt %i: %r" % (i, up_pkt))
+                        print("Error up_pkt %i: %r" % (i, up_pkt))
+                        err_file.write("ERROR ^^ \n")
+                    else:
+                        E += [IP(u[4:])]
                     up_pkt = ''
-                    dec_pkt = ''
+                elif up_header(d)['lastfrag'] == 0:
+                    pass
 
 wrpcap(output, E)
+err_file.close()
 print "Successfully extracted %i packets into %s" % (len(E), output)
-print "Error packets %i" % err_cnt

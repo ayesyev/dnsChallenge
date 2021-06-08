@@ -5,7 +5,7 @@
 #include <string.h>
 #include <zlib.h>
 
-char in[4096], out[4096];
+char in[512], out[2048];
 size_t outlen;
 
 int main(int argc, char **argv) {
